@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from .context import Context
@@ -120,6 +121,26 @@ def assess(state: dict, repository, model, root: Path) -> dict:
         result = model.complete(instructions(root) + "\nStage: assess execution and optionally repair technical test errors. If passed, return ACCEPT with no changes. Never alter expectations or assertions.\n" + guidance,
                                 {"untrusted_verification": diagnostic_summary, "untrusted_context": context.payload(), "untrusted_test_changes": state["changes"],
                                  "behavioral_expectations": state["behavioral_expectations"], "repairs_remaining": 2 - state["attempt"]})
+        # Safe, bounded diagnostics for GitHub Actions.
+        print(
+            "AGENT_ASSESSMENT "
+            + json.dumps(
+                {
+                    "verification_status": verification["status"],
+                    "model_decision": result["decision"],
+                    "model_assessment": result["assessment"],
+                    "model_reason": result["reason"][:240],
+                    "proposed_changes_count": len(result["proposed_changes"]),
+                    "requested_files_count": len(result["requested_files"]),
+                    "expectations_unchanged": (
+                        result["behavioral_expectations"]
+                        == state["behavioral_expectations"]
+                    ),
+                },
+                ensure_ascii=True,
+            ),
+            flush=True,
+        )
         require(not result["requested_files"], "Assessment cannot request arbitrary files.")
         require(result["behavioral_expectations"] == state["behavioral_expectations"], "Assessment changed the behavioral expectations.", "ORACLE_CONFLICT")
         if verification["status"] == "PASSED":
