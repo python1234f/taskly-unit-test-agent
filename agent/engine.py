@@ -118,10 +118,31 @@ def assess(state: dict, repository, model, root: Path) -> dict:
                         "passed": sum(case["passed"] for case in suite["cases"]),
                         "failed_cases": [case for case in suite["cases"] if not case["passed"]][:8]}
                 for phase in ("baseline", "targeted", "full") if (suite := suites.get(phase)) is not None}
-        result = model.complete(instructions(root) + "\nStage: assess execution and optionally repair technical test errors. If passed, return ACCEPT with no changes. Never alter expectations or assertions.\n" + guidance,
-                                {"untrusted_verification": diagnostic_summary, "untrusted_context": context.payload(), "untrusted_test_changes": state["changes"],
-                                 "behavioral_expectations": state["behavioral_expectations"], "repairs_remaining": 2 - state["attempt"]})
-        # Safe, bounded diagnostics for GitHub Actions.
+        result = model.complete(
+            instructions(root)
+            + "\nStage: assess execution and optionally repair technical test errors.\n"
+            + "You are reviewing tests that have ALREADY been generated.\n"
+            + "The decision field describes the original test-generation operation, "
+              "not whether additional tests are needed.\n"
+            + "If verification PASSED and the generated tests are adequate:\n"
+            + "- assessment MUST be ACCEPT.\n"
+            + "- decision MUST equal original_decision from the input.\n"
+            + "- proposed_changes MUST be empty.\n"
+            + "- requested_files MUST be empty.\n"
+            + "- behavioral_expectations MUST remain unchanged.\n"
+            + "NO_TESTS_NEEDED is only for initial PR analysis, not assessment.\n"
+            + "If tests fail, diagnose the failure and propose only permitted technical repairs.\n"
+            + "Never alter expectations or assertions.\n"
+            + guidance,
+            {
+                "untrusted_verification": diagnostic_summary,
+                "untrusted_context": context.payload(),
+                "untrusted_test_changes": state["changes"],
+                "original_decision": state["decision"],
+                "behavioral_expectations": state["behavioral_expectations"],
+                "repairs_remaining": 2 - state["attempt"],
+            },
+        )        # Safe, bounded diagnostics for GitHub Actions.
         print(
             "AGENT_ASSESSMENT "
             + json.dumps(
