@@ -12,3 +12,5 @@ htmlcov/
 *.db-wal
 .env
 .DS_Store
+.agent-output/
+.idea

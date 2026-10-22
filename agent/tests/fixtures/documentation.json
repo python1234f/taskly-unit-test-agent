@@ -1,0 +1,7 @@
+{
+  "changes": [{"filename": "README.md", "status": "modified", "patch": "+ Clarify local setup instructions."}],
+  "responses": [
+    {"schema_version": "1", "decision": "NO_TESTS_NEEDED", "reason": "Inspect a documentation change.", "assessment": "NOT_APPLICABLE", "required_skills": [{"name": "analyze-pr", "reason": "Confirm that no application behavior changed."}], "requested_files": [], "behavioral_expectations": [], "proposed_changes": []},
+    {"schema_version": "1", "decision": "NO_TESTS_NEEDED", "reason": "Only setup prose changed; no runtime behavior or test contract changed.", "assessment": "NOT_APPLICABLE", "required_skills": [], "requested_files": [], "behavioral_expectations": [], "proposed_changes": []}
+  ]
+}

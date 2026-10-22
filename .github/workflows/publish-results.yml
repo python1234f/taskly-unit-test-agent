@@ -1,0 +1,284 @@
+name: Unit Test Agent
+
+on:
+  workflow_run:
+    workflows: [PR Agent Request]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open pull request number in this repository
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: unit-test-agent-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number || github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+env:
+  AGENT_PR_NUMBER: ${{ inputs.pr_number }}
+
+defaults:
+  run:
+    working-directory: control
+
+jobs:
+  prepare:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.prepare.outputs.ready }}
+      pr_number: ${{ steps.prepare.outputs.pr_number }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Require Python 3.12
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12 is required"'
+      - name: Check trusted controller contracts
+        run: python3 -m unittest discover -s agent/tests -v
+      - name: Resolve and validate the original PR
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m agent.runner prepare --output .agent-output/prepared
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-prepared-${{ github.run_attempt }}
+          path: control/.agent-output/prepared/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  generate:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.ready == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: unit-test-agent
+    outputs:
+      status: ${{ steps.agent.outputs.status }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Analyze context, select skills and propose tests
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: python3 -m agent.runner generate --input-stage prepared --output .agent-output/generated
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-generated-${{ github.run_attempt }}
+          path: control/.agent-output/generated/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  verify0:
+    needs: [prepare, generate]
+    if: ${{ always() && needs.prepare.outputs.ready == 'true' && needs.generate.result == 'success' && needs.generate.outputs.status == 'GENERATED' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.agent.outputs.status }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Run baseline, proposed cases and affected suites without model credentials
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m agent.runner verify --input-stage generated --build-images --output .agent-output/verify0
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-verify0-${{ github.run_attempt }}
+          path: control/.agent-output/verify0/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  review0:
+    needs: [prepare, verify0]
+    if: ${{ always() && needs.prepare.outputs.ready == 'true' && needs.verify0.result == 'success' && needs.verify0.outputs.status == 'EXECUTED' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: unit-test-agent
+    outputs:
+      status: ${{ steps.agent.outputs.status }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Assess results and allow the first technical repair
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: python3 -m agent.runner assess --input-stage verify0 --output .agent-output/review0
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-review0-${{ github.run_attempt }}
+          path: control/.agent-output/review0/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  verify1:
+    needs: [prepare, review0]
+    if: ${{ always() && needs.prepare.outputs.ready == 'true' && needs.review0.result == 'success' && needs.review0.outputs.status == 'GENERATED' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.agent.outputs.status }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Verify the first repair in a fresh isolated runner
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m agent.runner verify --input-stage review0 --build-images --output .agent-output/verify1
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-verify1-${{ github.run_attempt }}
+          path: control/.agent-output/verify1/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  review1:
+    needs: [prepare, verify1]
+    if: ${{ always() && needs.prepare.outputs.ready == 'true' && needs.verify1.result == 'success' && needs.verify1.outputs.status == 'EXECUTED' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: unit-test-agent
+    outputs:
+      status: ${{ steps.agent.outputs.status }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Assess the first repair and allow the final technical repair
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: python3 -m agent.runner assess --input-stage verify1 --output .agent-output/review1
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-review1-${{ github.run_attempt }}
+          path: control/.agent-output/review1/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  verify2:
+    needs: [prepare, review1]
+    if: ${{ always() && needs.prepare.outputs.ready == 'true' && needs.review1.result == 'success' && needs.review1.outputs.status == 'GENERATED' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.agent.outputs.status }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Verify the final repair in a fresh isolated runner
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m agent.runner verify --input-stage review1 --build-images --output .agent-output/verify2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-verify2-${{ github.run_attempt }}
+          path: control/.agent-output/verify2/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  review2:
+    needs: [prepare, verify2]
+    if: ${{ always() && needs.prepare.outputs.ready == 'true' && needs.verify2.result == 'success' && needs.verify2.outputs.status == 'EXECUTED' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: unit-test-agent
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Accept verified tests or report exhaustion without a third repair
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: python3 -m agent.runner assess --input-stage verify2 --output .agent-output/review2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-review2-${{ github.run_attempt }}
+          path: control/.agent-output/review2/state.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, generate, verify0, review0, verify1, review1, verify2, review2]
+    if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: unit-test-agent-publish-${{ needs.prepare.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - name: Validate artifacts and prepare recoverable test changes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m agent.runner bundle --output .agent-output/delivery
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: unit-test-agent-delivery-${{ github.run_attempt }}
+          path: control/.agent-output/delivery/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish the SHA-bound report and verified draft PR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m agent.runner publish

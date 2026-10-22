@@ -1,0 +1,22 @@
+name: PR Agent Request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: unit-test-agent-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request:
+    if: ${{ !startsWith(github.head_ref, 'test-agent/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Request validation by the trusted controller
+        run: echo 'The default-branch controller will validate PR identity, origin and eligibility.'

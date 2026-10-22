@@ -6,3 +6,5 @@ uvicorn==0.54.0
 httpx==0.28.1
 pytest==9.1.1
 pytest-cov==7.1.0
+certifi==2026.10.19
+opentelemetry-api==1.45.1

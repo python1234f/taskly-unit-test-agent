@@ -1,0 +1,8 @@
+**
+!agent/
+!agent/Dockerfile
+!backend/
+!backend/requirements.txt
+!frontend/
+!frontend/package.json
+!frontend/package-lock.json
